@@ -284,40 +284,49 @@ fn path_overlay_drawn_for_non_vector_tools() {
     h.run_steps(3);
 
     // Get the accent colour so we know what to look for.
-    let accent = h.ctx.style().visuals.selection.bg_fill;
+    let accent = crate::theme::Tokens::get(&h.ctx).accent;
 
+    let xf = crate::canvas::ViewXform::active(h.state()).expect("active document view");
+    let ppp = h.ctx.pixels_per_point();
     let img = h.render().unwrap();
-    let (w, h_px) = (img.width(), img.height());
 
-    // The work path's top edge is at doc-y = 10. With zoom=2 and center=[100,100] the canvas
-    // occupies roughly the central 400×400 area of the 900×700 window. The canvas origin in
-    // screen space is approximately ((900-400)/2, (700-400)/2) = (250, 150). So doc-y=10 maps
-    // to screen-y ≈ 150 + 10*2 = 170, and doc-x = 50..150 maps to screen-x ≈ 250+100..250+300.
-    // We sample a strip of pixels along that expected screen row and count accent hits.
+    // Sample the rendered outline at points derived from the same transform the canvas used. The
+    // top edge is doc-y=10; x=70..130 stays away from the rectangle's anchor squares. A 1 px
+    // egui stroke is anti-aliased over the white canvas, so accept visible blends of the accent.
     let accent_r = accent.r();
     let accent_g = accent.g();
     let accent_b = accent.b();
+    let is_accent_stroke = |pixel: [u8; 4]| {
+        let denom = f32::from(255u8.saturating_sub(accent_r)).max(1.0);
+        let coverage = f32::from(255u8.saturating_sub(pixel[0])) / denom;
+        if !(0.2..=1.05).contains(&coverage) {
+            return false;
+        }
+        let blended = |channel: u8| 255.0 + coverage * (f32::from(channel) - 255.0);
+        (f32::from(pixel[1]) - blended(accent_g)).abs() <= 12.0 && (f32::from(pixel[2]) - blended(accent_b)).abs() <= 12.0
+    };
 
-    let mut accent_pixels = 0usize;
-    // Sample across screen-y = 165..175 (the top edge ±5 px for subpixel/AA tolerance),
-    // screen-x = 300..360 (well inside the top segment).
-    let x_range = (w / 3)..(w / 3 + w / 5);
-    for y in (h_px / 2 - 40)..(h_px / 2 - 30) {
-        for x in x_range.clone() {
-            let pixel = img.get_pixel(x, y);
-            // Count pixels whose RGB is within 20 of the accent colour.
-            if (pixel[0] as i32 - accent_r as i32).abs() < 20
-                && (pixel[1] as i32 - accent_g as i32).abs() < 20
-                && (pixel[2] as i32 - accent_b as i32).abs() < 20
-            {
-                accent_pixels += 1;
+    let has_accent_near = |at: egui::Pos2| {
+        let cx = (at.x * ppp).round() as i32;
+        let cy = (at.y * ppp).round() as i32;
+        let radius = (2.0 * ppp).ceil() as i32;
+        for y in (cy - radius)..=(cy + radius) {
+            for x in (cx - radius)..=(cx + radius) {
+                if x >= 0 && y >= 0 && (x as u32) < img.width() && (y as u32) < img.height() {
+                    let pixel = img.get_pixel(x as u32, y as u32);
+                    if is_accent_stroke([pixel[0], pixel[1], pixel[2], pixel[3]]) {
+                        return true;
+                    }
+                }
             }
         }
-    }
+        false
+    };
+    let hits = (70..=130).step_by(5).filter(|x| has_accent_near(xf.to_screen(*x as f32, 10.0))).count();
     assert!(
-        accent_pixels >= 3,
+        hits >= 10,
         "expected the work path outline to be visible with Brush tool active, \
-         but found only {accent_pixels} accent-coloured pixel(s) near the path's top edge \
+         but found accent-coloured pixels at only {hits} sample point(s) along the transformed top edge \
          (accent = #{accent_r:02x}{accent_g:02x}{accent_b:02x}); \
          the path must be drawn regardless of the active tool",
     );

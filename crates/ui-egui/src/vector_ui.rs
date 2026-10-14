@@ -931,7 +931,6 @@ pub(crate) fn draw_handle(painter: &egui::Painter, anchor: Pos2, handle: Pos2, a
 /// Work path / active shape path outlines, anchors, and the pen path in progress.
 pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform, doc: &Document) {
     let tool = app.ui.tool;
-    let vector_tool = matches!(tool, Tool::Pen | Tool::FreeformPen | Tool::CurvaturePen | Tool::PathSelection) || is_shape_tool(tool);
     let accent = Tokens::get(painter.ctx()).accent;
     let to_scr = |q: [f64; 2]| xf.to_screen(q[0] as f32, q[1] as f32);
     let draw_path = |p: &Path, anchors: bool| {
@@ -952,20 +951,20 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
             crate::anchor_tools::draw_hover(app, painter, &to_scr, accent, painter.ctx().input(|i| i.modifiers));
         }
     } else if paths {
-        // Paths remain visible (outline only) with any tool, as in Photoshop; anchor squares only
-        // show with path-editing tools so they don't distract while painting or moving (#visible).
+        // Paths remain visible as outlines with any tool. Path Selection adds anchor squares; Direct
+        // Selection has its own overlay above.
         if let Some(wp) = &doc.work_path {
-            draw_path(wp, vector_tool && tool == Tool::PathSelection);
+            draw_path(wp, tool == Tool::PathSelection);
         }
         let st = app.session.active();
         if let Some(l) = st.and_then(|s| s.active_layer.and_then(|id| s.doc.layer(id)))
             && let LayerContent::Shape(sh) = &l.content
         {
-            draw_path(&sh.path, vector_tool && tool == Tool::PathSelection);
+            draw_path(&sh.path, tool == Tool::PathSelection);
         }
         // A targeted vector mask shows its path with any tool (#196).
         if let Some((_, p)) = targeted_vector_mask(app) {
-            draw_path(&p, vector_tool && tool == Tool::PathSelection);
+            draw_path(&p, tool == Tool::PathSelection);
         }
         // The segment the Pen's Auto Add/Delete would add an anchor to, or the anchor it would delete.
         crate::anchor_tools::draw_pen_hover(app, painter, &to_scr, accent, painter.ctx().input(|i| i.modifiers));
