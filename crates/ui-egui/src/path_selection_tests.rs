@@ -247,3 +247,78 @@ fn clicking_shape_with_path_selection_selects_its_layer() {
     crate::vector_ui::path_selection_finish(h.state_mut(), [150.0, 90.0], [150.0, 90.0]);
     assert_eq!(h.state().session.active().unwrap().active_layer.unwrap().0, rect_layer);
 }
+
+/// Work paths remain visible (outline) regardless of the active tool. Before the fix,
+/// `draw_overlay` was gated on `vector_tool` so paths disappeared when switching to Brush, Move,
+/// etc. This test renders the canvas with a Brush tool active and a work path present, then
+/// confirms the path's outline pixels are painted in the accent colour, proving the path is drawn.
+#[test]
+fn path_overlay_drawn_for_non_vector_tools() {
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    app.run("file.new", json!({"width": 200, "height": 200})).unwrap();
+    app.sync_views();
+    // Place a work path whose top edge runs exactly along y=10 in document space.
+    app.run("path.set", json!({"name": "work", "path": rect_path(50.0, 10.0, 100.0, 80.0)})).unwrap();
+    // Switch to a non-vector tool — before the fix this hid the path outline.
+    app.ui.tool = Tool::Brush;
+
+    let mut h = Harness::builder().with_size(vec2(900.0, 700.0)).build_ui_state(
+        |ui, app: &mut PhotocraftApp| {
+            let ctx = ui.ctx().clone();
+            if !ctx.fonts(|f| f.families().contains(&egui::FontFamily::Name("medium".into()))) {
+                return;
+            }
+            egui::CentralPanel::default().show(ui, |ui| crate::canvas::document_area(app, ui));
+        },
+        app,
+    );
+    PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+    h.run_steps(6);
+    // Fit the view so document coordinates map predictably to screen pixels.
+    {
+        let v = &mut h.state_mut().ui.views[0];
+        v.zoom = 2.0; // 2 px/doc-px → the 200×200 doc fills 400×400 screen pixels
+        v.center = [100.0, 100.0];
+        v.fit_pending = false;
+    }
+    h.run_steps(3);
+
+    // Get the accent colour so we know what to look for.
+    let accent = h.ctx.style().visuals.selection.bg_fill;
+
+    let img = h.render().unwrap();
+    let (w, h_px) = (img.width(), img.height());
+
+    // The work path's top edge is at doc-y = 10. With zoom=2 and center=[100,100] the canvas
+    // occupies roughly the central 400×400 area of the 900×700 window. The canvas origin in
+    // screen space is approximately ((900-400)/2, (700-400)/2) = (250, 150). So doc-y=10 maps
+    // to screen-y ≈ 150 + 10*2 = 170, and doc-x = 50..150 maps to screen-x ≈ 250+100..250+300.
+    // We sample a strip of pixels along that expected screen row and count accent hits.
+    let accent_r = accent.r();
+    let accent_g = accent.g();
+    let accent_b = accent.b();
+
+    let mut accent_pixels = 0usize;
+    // Sample across screen-y = 165..175 (the top edge ±5 px for subpixel/AA tolerance),
+    // screen-x = 300..360 (well inside the top segment).
+    let x_range = (w / 3)..(w / 3 + w / 5);
+    for y in (h_px / 2 - 40)..(h_px / 2 - 30) {
+        for x in x_range.clone() {
+            let pixel = img.get_pixel(x, y);
+            // Count pixels whose RGB is within 20 of the accent colour.
+            if (pixel[0] as i32 - accent_r as i32).abs() < 20
+                && (pixel[1] as i32 - accent_g as i32).abs() < 20
+                && (pixel[2] as i32 - accent_b as i32).abs() < 20
+            {
+                accent_pixels += 1;
+            }
+        }
+    }
+    assert!(
+        accent_pixels >= 3,
+        "expected the work path outline to be visible with Brush tool active, \
+         but found only {accent_pixels} accent-coloured pixel(s) near the path's top edge \
+         (accent = #{accent_r:02x}{accent_g:02x}{accent_b:02x}); \
+         the path must be drawn regardless of the active tool",
+    );
+}
